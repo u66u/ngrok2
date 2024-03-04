@@ -1,0 +1,20 @@
+[package]
+name = "ngrok2"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+console-subscriber = "0.2"
+rand = "0.8"
+dotenv = "0.15.0"

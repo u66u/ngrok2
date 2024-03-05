@@ -1,5 +1,7 @@
-use ngrok2::{SyncErrResult, HANDSHAKE, MAX_CONNECTIONS, SERVER_PORT};
-use std::collections::HashMap;
+use ngrok2::{
+    init_api_keys, ApiKey, AuthResponse, SyncErrResult, HANDSHAKE, MAX_CONNECTIONS, SERVER_PORT,
+};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,10 +35,14 @@ async fn main() -> SyncErrResult {
     }));
     let listener = TcpListener::bind(("0.0.0.0", SERVER_PORT)).await?;
     info!("Started server on {}", SERVER_PORT);
+
+    let api_keys = init_api_keys();
+
     while let Ok((stream, _)) = time::timeout(Duration::from_secs(30), listener.accept()).await? {
         let state = state.clone();
+        let api_keys = api_keys.clone();
         task::spawn(async move {
-            if let Err(e) = handle(state, stream).await {
+            if let Err(e) = handle(state, stream, api_keys).await {
                 error!("{}", e);
             }
         });
@@ -44,20 +50,42 @@ async fn main() -> SyncErrResult {
     Ok(())
 }
 
-async fn handle(state: Arc<Mutex<State>>, mut client: TcpStream) -> SyncErrResult {
+async fn handle(
+    state: Arc<Mutex<State>>,
+    mut client: TcpStream,
+    api_keys: HashSet<ApiKey>,
+) -> SyncErrResult {
+    let mut api_key = [0; 256];
+    client.read_exact(&mut api_key).await?;
+
+    let api_key = String::from_utf8_lossy(&api_key)
+        .trim_end_matches('\0')
+        .to_string();
+
+    if !api_keys.contains(&api_key) {
+        client.write_u8(AuthResponse::Failure as u8).await?;
+        client.flush().await?;
+        return Err("Authentication failed".into());
+    }
+
+    client.write_u8(AuthResponse::Success as u8).await?;
+    client.flush().await?;
+
     match client.read_u128().await? {
         HANDSHAKE => {
             if !check_max_connections(state.clone()).await {
                 client.write_u16(0).await?;
                 info!("Connection rejected: maximum number of connections reached");
-                return Ok(());
+                return Err("Maximum number of connections reached".into());
             }
 
-            let listener = TcpListener::bind("0.0.0.0:0").await.unwrap(); // use random available port
-            let port = listener.local_addr()?.port();
+            let listener = TcpListener::bind("0.0.0.0:0").await?;
+            let server_port = listener.local_addr()?.port();
+
             let ip = client.peer_addr()?;
-            info!("{} connected on {}", ip, port);
-            client.write_u16(port).await?;
+            info!("{} connected on {}", ip, server_port);
+            client.write_u16(server_port).await?;
+
             let (mut read, mut write) = client.into_split();
             let listen = task::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
@@ -68,6 +96,7 @@ async fn handle(state: Arc<Mutex<State>>, mut client: TcpStream) -> SyncErrResul
                     task::spawn(delete(state.clone(), id));
                 }
             });
+
             let _ = read.read_u8().await;
             info!("{} disconnected", ip);
             listen.abort();

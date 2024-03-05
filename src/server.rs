@@ -1,4 +1,4 @@
-use ngrok2::{Result, HANDSHAKE, SERVER_PORT};
+use ngrok2::{SyncErrResult, HANDSHAKE, MAX_CONNECTIONS, SERVER_PORT};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,13 +10,27 @@ use tracing::{debug, error, info};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 
+#[derive(Default)]
+struct State {
+    connections: HashMap<u128, TcpStream>,
+    max_connections: usize,
+}
+
+async fn check_max_connections(state: Arc<Mutex<State>>) -> bool {
+    let state = state.lock().await;
+    state.connections.len() < state.max_connections
+}
+
 #[tokio::main]
-async fn main() -> Result {
+async fn main() -> SyncErrResult {
     tracing_subscriber::registry()
         .with(console_subscriber::spawn())
         .with(tracing_subscriber::fmt::layer().with_filter(LevelFilter::DEBUG))
         .init();
-    let state = Arc::new(Mutex::new(State::default()));
+    let state = Arc::new(Mutex::new(State {
+        connections: HashMap::new(),
+        max_connections: MAX_CONNECTIONS,
+    }));
     let listener = TcpListener::bind(("0.0.0.0", SERVER_PORT)).await?;
     info!("Started server on {}", SERVER_PORT);
     while let Ok((stream, _)) = time::timeout(Duration::from_secs(30), listener.accept()).await? {
@@ -30,11 +44,16 @@ async fn main() -> Result {
     Ok(())
 }
 
-async fn handle(state: Arc<Mutex<State>>, mut client: TcpStream) -> Result {
+async fn handle(state: Arc<Mutex<State>>, mut client: TcpStream) -> SyncErrResult {
     match client.read_u128().await? {
         HANDSHAKE => {
-            let listener = TcpListener::bind("0.0.0.0:0").await.unwrap(); // use random avaliable
-                                                                          // port
+            if !check_max_connections(state.clone()).await {
+                client.write_u16(0).await?;
+                info!("Connection rejected: maximum number of connections reached");
+                return Ok(());
+            }
+
+            let listener = TcpListener::bind("0.0.0.0:0").await.unwrap(); // use random available port
             let port = listener.local_addr()?.port();
             let ip = client.peer_addr()?;
             info!("{} connected on {}", ip, port);
@@ -68,9 +87,4 @@ async fn delete(state: Arc<Mutex<State>>, id: u128) {
     if state.lock().await.connections.remove(&id).is_some() {
         debug!("Removed stale connection {}", id);
     }
-}
-
-#[derive(Default)]
-struct State {
-    connections: HashMap<u128, TcpStream>,
 }

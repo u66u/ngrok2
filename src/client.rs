@@ -1,11 +1,11 @@
-use ngrok2::{Result, HANDSHAKE, SERVER, SERVER_PORT};
+use ngrok2::{SyncErrResult, HANDSHAKE, SERVER, SERVER_PORT};
 use std::env::args;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::{io, task};
 
 #[tokio::main]
-async fn main() -> Result {
+async fn main() -> SyncErrResult {
     match args().nth(1).map(|a| a.parse()) {
         Some(Ok(local_port)) => {
             let mut server = TcpStream::connect((SERVER, SERVER_PORT)).await?;
@@ -24,7 +24,7 @@ async fn main() -> Result {
     Ok(())
 }
 
-async fn handle(id: u128, local_port: u16) -> Result {
+async fn handle(id: u128, local_port: u16) -> SyncErrResult {
     let mut stream = TcpStream::connect((SERVER, SERVER_PORT)).await?;
     stream.write_u128(id).await?;
     stream.flush().await?;
